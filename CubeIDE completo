@@ -1,0 +1,1137 @@
+/* USER CODE BEGIN Header */
+/*
+ *Universidad del Valle de Guatemala
+ * BE3029 - Electrónica Digital 2
+ * Kathy Anzueto 24910 & Fabiola Caballeros 24927
+ * Proyecto 2
+ */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * Proyecto 2: Partes 1, 2, 3, 4 y 5
+  * UART + SPI + I2C + LCD + Timer
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+#define deviceAddress (0x32U << 1)
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+
+SPI_HandleTypeDef hspi2;
+
+TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart2;
+
+/* USER CODE BEGIN PV */
+
+/* =========================
+   VARIABLES UART
+   ========================= */
+
+uint8_t datoUART;
+
+volatile uint8_t opcion1 = 0;
+volatile uint8_t opcion2 = 0;
+volatile uint8_t opcionInvalida = 0;
+
+volatile uint8_t estado = 0;
+
+volatile uint8_t comando[16];
+volatile uint8_t cantidad = 0;
+volatile uint8_t comandoLargo = 0;
+volatile uint32_t ultimoDatoUART = 0;
+
+/* =========================
+   VARIABLES SPI
+   ========================= */
+
+uint8_t datosEnviar[5];
+uint8_t datosRecibir[5];
+uint32_t tiempoLED = 0;
+uint32_t ultimaConsulta = 0;
+uint8_t fallosRespuesta = 0;
+
+/* =========================
+   VARIABLES TIMER
+   ========================= */
+
+uint8_t byteRecibido;
+
+volatile char comandoTimer[16];
+volatile uint32_t posicionTimer = 0;
+volatile uint8_t descartarTimer = 0;
+volatile uint32_t ultimoCaracterTimer = 0;
+
+/* =========================
+   MENSAJES UART
+   ========================= */
+
+uint8_t menu[] =
+    "\r\n----- MENU PRINCIPAL -----\r\n"
+    "1. Controlar dispositivo SPI\r\n"
+    "2. Obtener medicion de sensor I2C\r\n"
+    "Seleccione una opcion:\r\n";
+
+uint8_t submenuSPI[] =
+    "\r\n1. Rojo\r\n"
+    "2. Amarillo\r\n"
+    "3. Verde\r\n"
+    "Ingrese LED y tiempo sin espacios y pulse Enter.\r\n"
+    "Ejemplo: 2,500\r\n";
+
+uint8_t msjSPI[] =
+    "\r\nSeleccionaste controlar dispositivo SPI.\r\n";
+
+uint8_t msjI2C[] =
+    "\r\nSeleccionaste obtener medicion de sensor I2C.\r\n";
+
+uint8_t msjError[] =
+    "\r\nOpcion invalida. Ingrese 1 o 2.\r\n";
+
+uint8_t msjComandoError[] =
+    "\r\nComando invalido.\r\n";
+
+uint8_t msjEnviado[] =
+    "\r\nDatos enviados. Espere la visualizacion en la pantalla LCD.\r\n";
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_SPI2_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM2_Init(void);
+/* USER CODE BEGIN PFP */
+
+/* =========================
+   FUNCIONES I2C
+   ========================= */
+
+static void MostrarTexto(const char *texto);
+static void SolicitarLecturaPotenciometro(void);
+
+/* =========================
+   FUNCIONES TIMER
+   ========================= */
+
+uint32_t LeerTiempo(const char *texto);
+void ConfigurarSenal(uint32_t tiempoMs);
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* ============================================================
+   FUNCION PARA MOSTRAR TEXTO POR UART
+   ============================================================ */
+
+static void MostrarTexto(const char *texto)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t *)texto, (uint16_t)strlen(texto), 1000);
+}
+
+/* ============================================================
+   PARTE 3 - COMUNICACION I2C
+   ============================================================ */
+
+static void SolicitarLecturaPotenciometro(void)
+{
+    uint8_t comandoI2C = 'S';
+
+    uint8_t datosRecibidos[2] = {0};
+    uint16_t valorPotenciometro;
+    char mensaje[100];
+
+    MostrarTexto("\r\nSolicitando medicion al ESP32...\r\n");
+
+    /* Envia comando '2' al ESP32 */
+    if (HAL_I2C_Master_Transmit(&hi2c1, deviceAddress, &comandoI2C, 1, HAL_MAX_DELAY) != HAL_OK)
+    {
+        uint32_t errorI2C = HAL_I2C_GetError(&hi2c1);
+
+        char mensajeError[80];
+
+        snprintf(mensajeError, sizeof(mensajeError), "Error I2C: %lu\r\n", errorI2C);
+
+        MostrarTexto(mensajeError);
+
+        return;
+    }
+
+
+     /* Espera a que el ESP32 lea el ADC */
+    HAL_Delay(100);
+
+    /* Recibe los dos bytes de la medicion */
+    if (HAL_I2C_Master_Receive(&hi2c1, deviceAddress, datosRecibidos, 2, HAL_MAX_DELAY) != HAL_OK)
+    {
+        MostrarTexto("Error: no se pudo recibir la medicion.\r\n");
+        return;
+    }
+
+    /*
+     * Une byte alto y byte bajo.
+     */
+    valorPotenciometro = ((uint16_t)datosRecibidos[0] << 8) | (uint16_t)datosRecibidos[1];
+
+    /*
+     * Validar rango del ADC de 12 bits.
+     */
+    if (valorPotenciometro > 4095U)
+    {
+        MostrarTexto("Error: medicion recibida fuera de rango.\r\n");
+        return;
+    }
+
+    /*
+     * Mostrar el valor en bits.
+     */
+    snprintf(mensaje, sizeof(mensaje), "Medicion sensor: %u\r\n", (unsigned int)valorPotenciometro);
+
+    MostrarTexto(mensaje);
+}
+
+
+/* ============================================================
+   PARTE 5 - LEER TIEMPO DEL COMANDO
+   ============================================================ */
+
+uint32_t LeerTiempo(const char *texto)
+{
+    /*
+     * Buscar la primera coma.
+     */
+    const char *cursor = texto;
+
+    while (*cursor != '\0' && *cursor != ',')
+    {
+        cursor++;
+    }
+
+    /*
+     * Si no hay coma, comando invalido.
+     */
+    if (*cursor != ',')
+    {
+        return 0U;
+    }
+
+    /*
+     * Avanzar despues de la coma.
+     */
+    cursor++;
+
+    /*
+     * Debe existir un numero despues de la coma.
+     */
+    if (*cursor == '\0')
+    {
+        return 0U;
+    }
+
+    uint32_t duracionMs = 0U;
+
+    while (*cursor != '\0')
+    {
+        /*
+         * Solo aceptar numeros.
+         */
+        if (*cursor < '0' || *cursor > '9')
+        {
+            return 0U;
+        }
+
+        duracionMs = duracionMs * 10U + (uint32_t)(*cursor - '0');
+
+        /*
+         * Limitar el tiempo a 60000 ms.
+         */
+        if (duracionMs > 60000U)
+        {
+            return 0U;
+        }
+
+        cursor++;
+    }
+
+    return duracionMs;
+}
+
+
+/* ============================================================
+   PARTE 5 - CONFIGURAR SENAL CUADRADA
+   ============================================================ */
+
+void ConfigurarSenal(uint32_t tiempoMs)
+{
+    if (tiempoMs == 0U || tiempoMs > 60000U)
+    {
+        return;
+    }
+
+    /*
+     * Detener PWM antes de cambiar sus parametros.
+     */
+    if (HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    __HAL_TIM_SET_AUTORELOAD(&htim2, (200U * tiempoMs) - 1U);
+
+    /*
+     * Duty cycle del 50 %.
+     */
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 100U * tiempoMs);
+
+    /*
+     * Aplicar los nuevos valores.
+     */
+    if (HAL_TIM_GenerateEvent(&htim2, TIM_EVENTSOURCE_UPDATE) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /*
+     * Reiniciar contador.
+     */
+    __HAL_TIM_SET_COUNTER(&htim2, 0U);
+
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_UPDATE);
+
+    /*
+     * Iniciar nuevamente el PWM.
+     */
+    if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+  MX_SPI2_Init();
+  MX_I2C1_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+
+  /*
+   * CS del ESP32 en estado inactivo.
+   */
+  HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_SET);
+
+  /*
+   * Iniciar recepcion UART mediante interrupcion.
+   */
+  if (HAL_UART_Receive_IT(&huart2, &datoUART, 1) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  /*
+   * Mostrar UNICAMENTE el menu principal.
+   */
+  HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+
+  while (1)
+  {
+
+    /* ========================================================
+       OPCION 1 - CONTROL SPI
+       ======================================================== */
+
+    if (opcion1 == 1)
+    {
+        opcion1 = 0;
+
+        HAL_UART_Transmit(&huart2, msjSPI, sizeof(msjSPI) - 1, 100);
+
+        HAL_UART_Transmit(&huart2, submenuSPI, sizeof(submenuSPI) - 1, 100);
+    }
+
+
+    /* ========================================================
+       OPCION 2 - SENSOR I2C
+       ======================================================== */
+
+    if (opcion2 == 1)
+    {
+        opcion2 = 0;
+
+        HAL_UART_Transmit(&huart2, msjI2C, sizeof(msjI2C) - 1, 100);
+
+        SolicitarLecturaPotenciometro();
+
+        /*
+         * Regresar al mismo menu principal.
+         */
+        HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+    }
+
+
+    /* ========================================================
+       OPCION INVALIDA
+       ======================================================== */
+
+    if (opcionInvalida == 1)
+    {
+        opcionInvalida = 0;
+
+        HAL_UART_Transmit(&huart2, msjError, sizeof(msjError) - 1, 100);
+
+        HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+    }
+
+
+    /* ========================================================
+       VALIDAR COMANDO LED,TIEMPO
+       ======================================================== */
+
+    if (estado == 1 && cantidad > 0)
+    {
+        /*
+         * Si pasan 100 ms sin recibir otro caracter,
+         * se considera terminado el comando.
+         */
+        if ((uint32_t)(HAL_GetTick() - ultimoDatoUART) >= 100)
+        {
+            estado = 2;
+        }
+    }
+
+
+    /* ========================================================
+       PROCESAR COMANDO
+       ======================================================== */
+
+    if (estado == 2)
+    {
+        uint8_t valido = 1;
+        uint8_t led = 0;
+
+        tiempoLED = 0;
+
+        /*
+         * El comando mas corto valido seria: 1,0
+         */
+        if (comandoLargo == 1)
+        {
+            valido = 0;
+        }
+        else if (cantidad < 3)
+        {
+            valido = 0;
+        }
+        else
+        {
+
+            /* -----------------------------------------------
+               Verificar LED
+               ----------------------------------------------- */
+
+            if (comando[0] < '1')
+            {
+                valido = 0;
+            }
+            else if (comando[0] > '3')
+            {
+                valido = 0;
+            }
+
+
+            /* -----------------------------------------------
+               Verificar coma
+               ----------------------------------------------- */
+
+            if (comando[1] != ',')
+            {
+                valido = 0;
+            }
+
+            led = comando[0] - '0';
+
+
+            /* -----------------------------------------------
+               Convertir tiempo de texto a numero
+               ----------------------------------------------- */
+
+            for (uint8_t i = 2; i < cantidad && valido == 1;i++)
+            {
+                if (comando[i] >= '0' && comando[i] <= '9')
+                {
+                    uint8_t digito =
+                        comando[i] - '0';
+
+
+                    if (tiempoLED > 429496729UL)
+                    {
+                        valido = 0;
+                    }
+                    else if (tiempoLED == 429496729UL && digito > 5)
+                    {
+                        valido = 0;
+                    }
+                    else
+                    {
+                        tiempoLED = tiempoLED * 10U + digito;
+                    }
+                }
+                else
+                {
+                    valido = 0;
+                }
+            }
+        }
+
+
+        /* ====================================================
+           COMANDO INVALIDO
+           ==================================================== */
+
+        if (valido == 0)
+        {
+            HAL_UART_Transmit(&huart2, msjComandoError, sizeof(msjComandoError) - 1, 100);
+
+            HAL_UART_Transmit(&huart2, submenuSPI, sizeof(submenuSPI) - 1, 100);
+
+            cantidad = 0;
+            comandoLargo = 0;
+
+            estado = 1;
+        }
+
+
+        /* ====================================================
+           COMANDO VALIDO
+           ==================================================== */
+
+        else
+        {
+
+            /* -----------------------------------------------
+               Preparar los cinco bytes para SPI
+               ----------------------------------------------- */
+
+            datosEnviar[0] = led;
+
+            datosEnviar[1] = tiempoLED % 256UL;
+
+            datosEnviar[2] = (tiempoLED / 256UL) % 256UL;
+
+            datosEnviar[3] = (tiempoLED / 65536UL) % 256UL;
+
+            datosEnviar[4] = (tiempoLED / 16777216UL) % 256UL;
+
+
+            /* -----------------------------------------------
+               Enviar comando por SPI
+               ----------------------------------------------- */
+
+            HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_RESET);
+
+            HAL_StatusTypeDef resultadoSPI = HAL_SPI_TransmitReceive(&hspi2, datosEnviar, datosRecibir, 5, 100);
+
+            HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_SET);
+
+
+            if (resultadoSPI == HAL_OK)
+            {
+
+                /* -------------------------------------------
+                   PARTE 5
+                   Configurar la señal con EL MISMO TIEMPO
+                   ------------------------------------------- */
+
+                ConfigurarSenal(tiempoLED);
+
+
+                /* -------------------------------------------
+                   Limpiar datos enviados
+                   ------------------------------------------- */
+
+                for (uint8_t i = 0; i < 5; i++)
+                {
+                    datosEnviar[i] = 0;
+                }
+
+
+                ultimaConsulta = HAL_GetTick();
+
+                fallosRespuesta = 0;
+
+                estado = 3;
+
+
+                HAL_UART_Transmit(&huart2, msjEnviado, sizeof(msjEnviado) - 1, 100);
+            }
+            else
+            {
+                HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+
+                estado = 0;
+            }
+        }
+    }
+
+
+    /* ========================================================
+       ESPERAR A QUE TERMINE EL ESP32
+       ======================================================== */
+
+    if (estado == 3)
+    {
+        if (
+            (uint32_t)(HAL_GetTick() - ultimaConsulta) >= 50)
+        {
+            ultimaConsulta = HAL_GetTick();
+
+
+            /* -----------------------------------------------
+               Limpiar datos recibidos
+               ----------------------------------------------- */
+
+            for (uint8_t i = 0; i < 5; i++)
+            {
+                datosRecibir[i] = 0;
+            }
+
+
+            /* -----------------------------------------------
+               Consultar ESP32 por SPI
+               ----------------------------------------------- */
+
+            HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_RESET);
+
+            HAL_StatusTypeDef resultadoSPI = HAL_SPI_TransmitReceive(&hspi2, datosEnviar, datosRecibir, 5, 100);
+
+            HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_SET);
+
+
+            /* -----------------------------------------------
+               ESP32 indica que termino
+               ----------------------------------------------- */
+
+            if (resultadoSPI == HAL_OK && datosRecibir[0] == 2)
+            {
+                HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+
+                estado = 0;
+            }
+
+
+            /* -----------------------------------------------
+               ESP32 indica que LED sigue encendido
+               ----------------------------------------------- */
+
+            else if (resultadoSPI == HAL_OK && datosRecibir[0] == 1)
+            {
+                fallosRespuesta = 0;
+            }
+
+
+            /* -----------------------------------------------
+               Respuesta invalida
+               ----------------------------------------------- */
+
+            else
+            {
+                if (resultadoSPI == HAL_OK && datosRecibir[0] == 3)
+                {
+                    fallosRespuesta = 100;
+                }
+                else
+                {
+                    fallosRespuesta++;
+                }
+
+
+                /*
+                 * Regresar al menu si no hay respuesta valida.
+                 */
+                if (fallosRespuesta >= 100)
+                {
+                    HAL_UART_Transmit(
+                        &huart2,
+                        menu,
+                        sizeof(menu) - 1,
+                        100
+                    );
+
+                    estado = 0;
+                }
+            }
+        }
+    }
+
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 84;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief SPI2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI2_Init(void)
+{
+
+  /* USER CODE BEGIN SPI2_Init 0 */
+
+  /* USER CODE END SPI2_Init 0 */
+
+  /* USER CODE BEGIN SPI2_Init 1 */
+
+  /* USER CODE END SPI2_Init 1 */
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI2_Init 2 */
+
+  /* USER CODE END SPI2_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 839;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 5000;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CS_ESP32_GPIO_Port, CS_ESP32_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LD2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : CS_ESP32_Pin */
+  GPIO_InitStruct.Pin = CS_ESP32_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(CS_ESP32_GPIO_Port, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+
+/* ============================================================
+   INTERRUPCION UART
+   Parte 1 + Parte 2
+   ============================================================ */
+
+void HAL_UART_RxCpltCallback(
+    UART_HandleTypeDef *huart
+)
+{
+    if (huart->Instance != USART2)
+    {
+        return;
+    }
+
+
+    /* ========================================================
+       MENU PRINCIPAL
+       ======================================================== */
+
+    if (estado == 0)
+    {
+        if (datoUART == '1')
+        {
+            cantidad = 0;
+
+            comandoLargo = 0;
+
+            estado = 1;
+
+            opcion1 = 1;
+        }
+
+        else if (datoUART == '2')
+        {
+            opcion2 = 1;
+        }
+
+        else if (
+            datoUART != '\r' &&
+            datoUART != '\n'
+        )
+        {
+            opcionInvalida = 1;
+        }
+    }
+
+
+    /* ========================================================
+       RECIBIR COMANDO LED,TIEMPO
+       ======================================================== */
+
+    else if (estado == 1)
+    {
+        if (
+            datoUART == '\r' ||
+            datoUART == '\n'
+        )
+        {
+            if (cantidad > 0)
+            {
+                estado = 2;
+            }
+
+            else if (comandoLargo == 1)
+            {
+                estado = 2;
+            }
+        }
+
+        else
+        {
+            if (
+                cantidad < sizeof(comando)
+            )
+            {
+                comando[cantidad] =
+                    datoUART;
+
+                cantidad++;
+
+                /*
+                 * Guardar momento del ultimo
+                 * caracter recibido.
+                 */
+                ultimoDatoUART =
+                    HAL_GetTick();
+            }
+
+            else
+            {
+                comandoLargo = 1;
+            }
+        }
+    }
+
+
+    /*
+     * Continuar recibiendo caracteres.
+     */
+    HAL_UART_Receive_IT(&huart2, &datoUART,1);
+}
+
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
