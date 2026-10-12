@@ -66,6 +66,9 @@ volatile uint8_t cantidad = 0;
 volatile uint8_t comandoLargo = 0;
 volatile uint32_t ultimoDatoUART = 0;
 
+volatile uint8_t primerCaracterMenu = 0;
+volatile uint8_t longitudMenu = 0;
+
 /* =========================
    VARIABLES SPI
    ========================= */
@@ -359,6 +362,10 @@ int main(void)
         HAL_UART_Transmit(&huart2, msjI2C, sizeof(msjI2C) - 1, 100);
         SolicitarLecturaPotenciometro();
         HAL_UART_Transmit(&huart2, menu, sizeof(menu) - 1, 100);
+
+        estado = 0;
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0U);
+        HAL_TIM_GenerateEvent(&htim2, TIM_EVENTSOURCE_UPDATE);
     }
 
 
@@ -858,9 +865,7 @@ static void MX_GPIO_Init(void)
    Parte 1 + Parte 2
    ============================================================ */
 
-void HAL_UART_RxCpltCallback(
-    UART_HandleTypeDef *huart
-)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance != USART2){
         return;
@@ -870,20 +875,41 @@ void HAL_UART_RxCpltCallback(
        MENU PRINCIPAL
        ======================================================== */
 
-    if (estado == 0){
-        if (datoUART == '1'){
-            cantidad = 0;
-            comandoLargo = 0;
-            estado = 1;
-            opcion1 = 1;
-        }
+    if (estado == 0)
+    {
+        if (datoUART == '\r' || datoUART == '\n')
+        {
+            if (longitudMenu == 1 && primerCaracterMenu == '1')
+            {
+                cantidad = 0;
+                comandoLargo = 0;
+                estado = 1;
+                opcion1 = 1;
+            }
+            else if (longitudMenu == 1 && primerCaracterMenu == '2')
+            {
+                estado = 4;       // Ocupado con la medición I2C
+                opcion2 = 1;
+            }
+            else if (longitudMenu > 0)
+            {
+                opcionInvalida = 1;
+            }
 
-        else if (datoUART == '2'){
-            opcion2 = 1;
+            primerCaracterMenu = 0;
+            longitudMenu = 0;
         }
+        else
+        {
+            if (longitudMenu == 0)
+            {
+                primerCaracterMenu = datoUART;
+            }
 
-        else if (datoUART != '\r' && datoUART != '\n'){
-            opcionInvalida = 1;
+            if (longitudMenu < 2)
+            {
+                longitudMenu++;
+            }
         }
     }
 
